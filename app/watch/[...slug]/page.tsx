@@ -23,19 +23,20 @@ export default async function WatchPage({ params }: { params: { slug: string[] }
 
       <div className="mx-auto max-w-6xl px-5 md:px-8 pt-10 pb-20">
         <div className="relative aspect-video overflow-hidden rounded-2xl bg-studio-panel">
-          {detail.videoSrc ? (
+          {detail.embedUrl ? (
+            <iframe
+              src={detail.embedUrl}
+              className="h-full w-full"
+              frameBorder={0}
+              allow="autoplay; fullscreen"
+              allowFullScreen
+            />
+          ) : detail.videoSrc ? (
             <video
               src={detail.videoSrc}
               poster={detail.thumbnail || undefined}
               controls
               className="h-full w-full object-contain bg-black"
-            />
-          ) : detail.embedUrl ? (
-            <iframe
-              src={detail.embedUrl}
-              className="h-full w-full"
-              allow="autoplay; fullscreen"
-              allowFullScreen
             />
           ) : (
             <div className="flex h-full w-full items-center justify-center text-studio-muted text-sm">
