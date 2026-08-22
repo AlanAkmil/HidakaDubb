@@ -70,55 +70,84 @@ export function buildEmbedUrl(watchPath: string, colorHex = "FF5A3C"): string | 
 }
 
 /**
- * Loose card parser: finds every <a href*="/watch/"> and walks up parent
- * levels to pull duration/views/uploader text out of the surrounding
- * block. Deliberately not tied to exact class names so small theme
- * tweaks on the source site don't break it outright.
+ * Find the smallest DOM element that contains both given elements (their
+ * lowest common ancestor).
+ */
+function lowestCommonAncestor($: cheerio.CheerioAPI, elA: any, elB: any): any {
+  const chainA: any[] = [];
+  let cur = $(elA);
+  while (cur.length) {
+    chainA.push(cur.get(0));
+    cur = cur.parent();
+  }
+  const setA = new Set(chainA);
+  let curB = $(elB);
+  while (curB.length) {
+    if (setA.has(curB.get(0))) return curB.get(0);
+    curB = curB.parent();
+  }
+  return elA;
+}
+
+/**
+ * Loose card parser: finds every <a href*="/watch/"> and reconstructs each
+ * card from ALL anchors that share the same href, not just the first one
+ * seen.
  *
- * IMPORTANT: the walk-up stops as soon as the container would contain
- * MORE THAN ONE distinct /watch/ link. Different pages on the source
- * site (home vs. category vs. search) nest the card markup at
- * different depths - climbing a fixed number of levels risked landing
- * on a shared ancestor (e.g. the whole results grid on /search), which
- * made every card's text() blend together and produced identical
- * duration/views/uploaded values across all cards. Stopping at "more
- * than one link found" keeps each card's data isolated regardless of
- * how deep that page nests things.
+ * The source site renders each video with TWO separate anchors pointing at
+ * the same /watch/ URL: one wraps just the thumbnail <img> (no visible
+ * text), the other wraps the title text inside a heading below it. The
+ * previous version only ever read data out of whichever anchor it met
+ * first, so about half the time the title never got read - which is why
+ * some cards showed a real title and others showed "(unknown)".
+ *
+ * Fix: group anchors by href first, then use the lowest common ancestor
+ * of ALL anchors sharing that href as the card container. This also fixes
+ * a second bug where, on pages with a different layout (like /search),
+ * climbing a fixed number of parent levels sometimes reached a shared
+ * ancestor of multiple different cards, blending their text together and
+ * producing identical duration/views/uploaded values for every result.
  */
 function parseVideoCards($: cheerio.CheerioAPI): Video[] {
-  const seen = new Set<string>();
+  const byHref = new Map<string, any[]>();
+  $('a[href*="/watch/"]').each((_, el) => {
+    const href = $(el).attr("href") || "";
+    if (!href) return;
+    if (!byHref.has(href)) byHref.set(href, []);
+    byHref.get(href)!.push(el);
+  });
+
   const cards: Video[] = [];
 
-  $('a[href*="/watch/"]').each((_, el) => {
-    const a = $(el);
-    const href = a.attr("href") || "";
-    if (!href || seen.has(href)) return;
-    seen.add(href);
-
-    let container = a;
-    const MAX_LEVELS = 6;
-    for (let i = 0; i < MAX_LEVELS; i++) {
-      const parent = container.parent();
-      if (!parent.length) break;
-      const linksInParent = parent.find('a[href*="/watch/"]').length;
-      if (linksInParent > 1) break; // parent now spans multiple cards - stop here
-      container = parent;
+  byHref.forEach((els, href) => {
+    let containerEl = els[0];
+    for (let i = 1; i < els.length; i++) {
+      containerEl = lowestCommonAncestor($, containerEl, els[i]);
     }
+    const container = $(containerEl);
 
-    const img = a.find("img").first().attr("src") || container.find("img").first().attr("src") || null;
-    const thumb = img || container.find("img").first().attr("data-src") || null;
-
-    // Title: try the anchor's own title/text first, then an img alt
-    // inside the card, then the nearest heading/paragraph text - covers
-    // layouts where the title lives outside the <a> entirely.
-    const imgAlt = a.find("img").first().attr("alt")?.trim() || container.find("img").first().attr("alt")?.trim();
-    const headingText = container.find("h1,h2,h3,h4,p").first().text().trim();
-    const title =
-      a.attr("title")?.trim() ||
-      a.text().trim() ||
-      imgAlt ||
-      headingText ||
+    // Prefer lazy-load attributes over `src`: many tube-CMS templates only
+    // fill `src` with a placeholder pixel and put the real image in
+    // data-src, swapped in by JS on scroll (which we never run).
+    const img = container.find("img").first();
+    const thumb =
+      img.attr("data-src") ||
+      img.attr("data-original") ||
+      img.attr("data-lazy-src") ||
+      (img.attr("src") && !img.attr("src")!.startsWith("data:") ? img.attr("src") : null) ||
       null;
+
+    // Title: check every anchor for this href (title attr, then visible
+    // text), then fall back to the image alt or nearest heading/paragraph.
+    let title: string | null = null;
+    for (const el of els) {
+      const a = $(el);
+      title = a.attr("title")?.trim() || a.text().trim() || null;
+      if (title) break;
+    }
+    if (!title) {
+      title = img.attr("alt")?.trim() || container.find("h1,h2,h3,h4,p").first().text().trim() || null;
+    }
 
     const text = container.text().replace(/\s+/g, " ").trim();
 
@@ -134,6 +163,21 @@ function parseVideoCards($: cheerio.CheerioAPI): Video[] {
       ? new URL(uploaderA.attr("href") || "", BASE_URL).toString()
       : null;
 
+    // Category: look for a link to /videos/category/<id> inside the card
+    // and map the id back to its readable name via CATEGORIES; fall back
+    // to the link's own text if the id isn't one we recognize.
+    const catA = container.find('a[href*="/videos/category/"]').first();
+    let category: string | null = null;
+    if (catA.length) {
+      const catHref = catA.attr("href") || "";
+      const idMatch = catHref.match(/\/videos\/category\/([^/?#]+)/);
+      const id = idMatch ? idMatch[1] : null;
+      const byId = id
+        ? Object.entries(CATEGORIES).find(([, v]) => String(v) === String(id))
+        : undefined;
+      category = byId ? byId[0] : catA.text().trim() || null;
+    }
+
     const fullUrl = new URL(href, BASE_URL).toString();
 
     cards.push({
@@ -146,7 +190,7 @@ function parseVideoCards($: cheerio.CheerioAPI): Video[] {
       uploaderUrl,
       views: viewsMatch ? viewsMatch[1] : null,
       uploaded: uploadedMatch ? uploadedMatch[1] : null,
-      category: null,
+      category,
     });
   });
 
