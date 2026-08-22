@@ -51,6 +51,22 @@ function pathFromWatchHref(href: string): string {
 }
 
 /**
+ * The watch slug always ends in "_<id>.html" and the confirmed embed URL
+ * pattern is /embed/<id>?color=<hex, no #>. Deriving it straight from the
+ * filename is more reliable than scraping for an embed link on the page
+ * (which isn't always present) - it works for every video unconditionally.
+ */
+function extractEmbedId(watchPath: string): string | null {
+  const match = watchPath.match(/_([A-Za-z0-9]+)\.html$/);
+  return match ? match[1] : null;
+}
+
+export function buildEmbedUrl(watchPath: string, colorHex = "FF5A3C"): string | null {
+  const id = extractEmbedId(watchPath);
+  return id ? `${BASE_URL}/embed/${id}?color=${colorHex}` : null;
+}
+
+/**
  * Loose card parser: finds every <a href*="/watch/"> and walks up a few
  * parent levels to pull duration/views/uploader text out of the
  * surrounding block. Deliberately not tied to exact class names so small
@@ -143,12 +159,33 @@ export async function getWatchDetail(watchPath: string): Promise<VideoDetail> {
 
   const title = $("h1").first().text().trim() || $("title").text().trim() || "(unknown)";
 
-  // video source: <a> ending in .mp4, confirmed pattern on live pages
-  const videoA = $('a[href$=".mp4"], a[href*=".mp4?"]').first();
-  const videoSrc = videoA.attr("href") || null;
+  // video source: try several known patterns, in order of reliability.
+  // 1) plain <a href="....mp4">, confirmed on some pages
+  // 2) <video><source src="....mp4">
+  // 3) JW Player-style config embedded in a <script>: "file":"....mp4"
+  // 4) any .mp4 URL anywhere in the raw HTML (last resort)
+  let videoSrc: string | null =
+    $('a[href$=".mp4"], a[href*=".mp4?"]').first().attr("href") ||
+    $("video source").first().attr("src") ||
+    $("video").first().attr("src") ||
+    null;
 
-  const embedA = $('a[href*="/embed/"]').first();
-  const embedUrl = embedA.length ? new URL(embedA.attr("href") || "", BASE_URL).toString() : null;
+  if (!videoSrc) {
+    const fileMatch = html.match(/"file"\s*:\s*"([^"]+\.mp4[^"]*)"/i);
+    if (fileMatch) videoSrc = fileMatch[1].replace(/\\\//g, "/");
+  }
+  if (!videoSrc) {
+    const rawMatch = html.match(/https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*/i);
+    if (rawMatch) videoSrc = rawMatch[0];
+  }
+
+  const embedA = $('a[href*="/embed/"]').first().attr("href");
+  const embedIframe = $('iframe[src*="/embed/"]').first().attr("src");
+  const scrapedEmbedUrl =
+    embedA || embedIframe ? new URL((embedA || embedIframe)!, BASE_URL).toString() : null;
+  // buildEmbedUrl() derives the URL straight from the slug filename, so it
+  // works even when the page doesn't expose an embed link/iframe directly.
+  const embedUrl = scrapedEmbedUrl || buildEmbedUrl(cleanPath);
 
   let synopsis: string | null = null;
   let downloadLink: string | null = null;
@@ -203,14 +240,13 @@ export async function getWatchDetail(watchPath: string): Promise<VideoDetail> {
 }
 
 /**
- * Search endpoint pattern is still unconfirmed (no static form/link found
- * on the source site - it's likely loaded via client-side JS). Tries a
- * few common tube-CMS patterns and returns whichever first yields cards.
- * Update `candidates` once the real pattern is confirmed.
+ * Search endpoint dikonfirmasi lewat live fetch: /search?keyword=<query>
+ * (bukan ?q= seperti pola umum tube-CMS lainnya). Ada juga varian
+ * ?lang=... di situs yang sama, jadi param keyword ini yang benar.
  */
 export async function search(query: string): Promise<{ pathTried: string; results: Video[] }> {
   const q = encodeURIComponent(query);
-  const candidates = [`/search?q=${q}`, `/search/${q}`, `/videos/search?q=${q}`];
+  const candidates = [`/search?keyword=${q}`, `/search?q=${q}`, `/search/${q}`];
 
   for (const path of candidates) {
     try {
