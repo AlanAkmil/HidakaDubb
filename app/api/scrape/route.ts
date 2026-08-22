@@ -9,7 +9,22 @@ export const dynamic = "force-dynamic";
 //   /api/scrape?type=listing&kind=latest
 //   /api/scrape?type=watch&path=cars-2006-dubbing-indonesia_MVRGx2VzbTZb2mm.html
 //   /api/scrape?type=search&q=cars
+// Debug endpoint gate: set SCRAPE_DEBUG_KEY in Vercel's env vars, then hit
+// this route with ?key=<value>. Without a key configured, the route works
+// unrestricted (handy for local dev) - but once deployed, set the env var
+// so randoms can't hammer your server to scrape dubbindo.site for free.
+function isAuthorized(req: NextRequest): boolean {
+  const requiredKey = process.env.SCRAPE_DEBUG_KEY;
+  if (!requiredKey) return true;
+  const { searchParams } = new URL(req.url);
+  return searchParams.get("key") === requiredKey;
+}
+
 export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { searchParams } = new URL(req.url);
   const type = searchParams.get("type") || "home";
 
