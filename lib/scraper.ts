@@ -21,10 +21,13 @@ export type Video = {
   category: string | null;
 };
 
+export type VideoSource = { label: string; url: string };
+
 export type VideoDetail = {
   title: string;
   url: string;
   videoSrc: string | null;
+  videoSources: VideoSource[]; // multiple qualities if the source page exposes them
   embedUrl: string | null;
   downloadLink: string | null;
   uploader: string | null;
@@ -67,10 +70,20 @@ export function buildEmbedUrl(watchPath: string, colorHex = "FF5A3C"): string | 
 }
 
 /**
- * Loose card parser: finds every <a href*="/watch/"> and walks up a few
- * parent levels to pull duration/views/uploader text out of the
- * surrounding block. Deliberately not tied to exact class names so small
- * theme tweaks on the source site don't break it outright.
+ * Loose card parser: finds every <a href*="/watch/"> and walks up parent
+ * levels to pull duration/views/uploader text out of the surrounding
+ * block. Deliberately not tied to exact class names so small theme
+ * tweaks on the source site don't break it outright.
+ *
+ * IMPORTANT: the walk-up stops as soon as the container would contain
+ * MORE THAN ONE distinct /watch/ link. Different pages on the source
+ * site (home vs. category vs. search) nest the card markup at
+ * different depths - climbing a fixed number of levels risked landing
+ * on a shared ancestor (e.g. the whole results grid on /search), which
+ * made every card's text() blend together and produced identical
+ * duration/views/uploaded values across all cards. Stopping at "more
+ * than one link found" keeps each card's data isolated regardless of
+ * how deep that page nests things.
  */
 function parseVideoCards($: cheerio.CheerioAPI): Video[] {
   const seen = new Set<string>();
@@ -83,15 +96,29 @@ function parseVideoCards($: cheerio.CheerioAPI): Video[] {
     seen.add(href);
 
     let container = a;
-    for (let i = 0; i < 4; i++) {
+    const MAX_LEVELS = 6;
+    for (let i = 0; i < MAX_LEVELS; i++) {
       const parent = container.parent();
-      if (parent.length) container = parent;
-      else break;
+      if (!parent.length) break;
+      const linksInParent = parent.find('a[href*="/watch/"]').length;
+      if (linksInParent > 1) break; // parent now spans multiple cards - stop here
+      container = parent;
     }
 
-    const title = a.attr("title")?.trim() || a.text().trim() || null;
     const img = a.find("img").first().attr("src") || container.find("img").first().attr("src") || null;
     const thumb = img || container.find("img").first().attr("data-src") || null;
+
+    // Title: try the anchor's own title/text first, then an img alt
+    // inside the card, then the nearest heading/paragraph text - covers
+    // layouts where the title lives outside the <a> entirely.
+    const imgAlt = a.find("img").first().attr("alt")?.trim() || container.find("img").first().attr("alt")?.trim();
+    const headingText = container.find("h1,h2,h3,h4,p").first().text().trim();
+    const title =
+      a.attr("title")?.trim() ||
+      a.text().trim() ||
+      imgAlt ||
+      headingText ||
+      null;
 
     const text = container.text().replace(/\s+/g, " ").trim();
 
@@ -179,6 +206,46 @@ export async function getWatchDetail(watchPath: string): Promise<VideoDetail> {
     if (rawMatch) videoSrc = rawMatch[0];
   }
 
+  // Multiple qualities: look for a JW Player-style "sources":[...] block
+  // with {file,label} pairs, then <video><source> tags with a label/res
+  // attribute, then plain <a href="...mp4"> links whose text looks like
+  // a resolution (e.g. "720p", "HD", "SD"). If none of these patterns are
+  // present, the source page simply doesn't offer multiple qualities -
+  // there is only ever one videoSrc/embedUrl to play in that case.
+  const videoSources: VideoSource[] = [];
+  const seenSrc = new Set<string>();
+  const addSource = (label: string, url: string | undefined | null) => {
+    if (!url) return;
+    const abs = url.startsWith("http") ? url : new URL(url, BASE_URL).toString();
+    if (seenSrc.has(abs)) return;
+    seenSrc.add(abs);
+    videoSources.push({ label, url: abs });
+  };
+
+  const sourcesBlockMatch = html.match(/"sources"\s*:\s*(\[[^\]]*\])/i);
+  if (sourcesBlockMatch) {
+    try {
+      const raw = sourcesBlockMatch[1].replace(/\\\//g, "/");
+      const parsed = JSON.parse(raw) as Array<{ file?: string; label?: string; res?: string }>;
+      parsed.forEach((s) => addSource(s.label || s.res || "auto", s.file));
+    } catch {
+      // malformed/partial JSON in the page - ignore and fall through
+    }
+  }
+  $("video source").each((_, el) => {
+    const s = $(el);
+    const label = s.attr("label") || s.attr("size") || s.attr("res") || s.attr("title");
+    if (label) addSource(label, s.attr("src"));
+  });
+  $('a[href$=".mp4"], a[href*=".mp4?"]').each((_, el) => {
+    const a = $(el);
+    const text = a.text().trim();
+    if (/^\d{3,4}p$|^(HD|SD|FHD|4K)$/i.test(text)) addSource(text, a.attr("href"));
+  });
+  if (videoSources.length === 0 && videoSrc) {
+    addSource("default", videoSrc);
+  }
+
   const embedA = $('a[href*="/embed/"]').first().attr("href");
   const embedIframe = $('iframe[src*="/embed/"]').first().attr("src");
   const scrapedEmbedUrl =
@@ -226,6 +293,7 @@ export async function getWatchDetail(watchPath: string): Promise<VideoDetail> {
     title,
     url: fullUrl,
     videoSrc,
+    videoSources,
     embedUrl,
     downloadLink,
     uploader,
