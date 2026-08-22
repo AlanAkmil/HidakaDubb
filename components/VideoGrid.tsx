@@ -1,27 +1,58 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, LayoutGroup } from "framer-motion";
 import VideoCard from "./VideoCard";
 import Waveform from "./Waveform";
 import type { Video } from "@/lib/scraper";
 
-const CATEGORY_TABS = ["Anime Series", "Anime Movie", "Film Movie", "TV Series", "Shorts"];
+// Mirrors CATEGORIES in lib/scraper.ts - duplicated here (not imported)
+// because scraper.ts pulls in cheerio, which we don't want bundled into
+// client JS just for an id lookup.
+const CATEGORY_IDS: Record<string, number | string> = {
+  "Anime Series": 5,
+  "Anime Movie": 4,
+  "Film Movie": 1,
+  "TV Series": 3,
+  Shorts: 790,
+};
+const CATEGORY_TABS = Object.keys(CATEGORY_IDS);
 
 export default function VideoGrid({ videos }: { videos: Video[] }) {
   const [active, setActive] = useState<string>("Semua");
+  const [categoryVideos, setCategoryVideos] = useState<Video[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
   const tabs = ["Semua", ...CATEGORY_TABS];
 
-  const shown = useMemo(() => {
-    if (active === "Semua") return videos;
-    // category isn't always reliably parsed from card blocks, so we also
-    // fall back to matching it loosely against the title text.
-    return videos.filter(
-      (v) =>
-        v.category === active ||
-        v.title.toLowerCase().includes(active.toLowerCase().split(" ")[0])
-    );
-  }, [active, videos]);
+  useEffect(() => {
+    if (active === "Semua") {
+      setCategoryVideos(null);
+      setError(false);
+      return;
+    }
+    const id = CATEGORY_IDS[active];
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
+    fetch(`/api/scrape?type=category&id=${encodeURIComponent(String(id))}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        setCategoryVideos(Array.isArray(data.videos) ? data.videos : []);
+      })
+      .catch(() => {
+        if (!cancelled) setError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active]);
+
+  const shown = active === "Semua" ? videos : categoryVideos ?? [];
 
   return (
     <section id="jelajah" className="mx-auto max-w-7xl px-5 md:px-8 py-16 md:py-20">
@@ -61,7 +92,21 @@ export default function VideoGrid({ videos }: { videos: Video[] }) {
         </div>
       </LayoutGroup>
 
-      {videos.length === 0 ? (
+      {loading ? (
+        <div className="rounded-xl border border-white/5 bg-studio-panel py-16 text-center">
+          <p className="text-studio-muted">Lagi ambil data kategori "{active}"…</p>
+        </div>
+      ) : error ? (
+        <div className="rounded-xl border border-white/5 bg-studio-panel py-16 text-center">
+          <p className="text-studio-muted">
+            Gagal ambil data kategori dari sumber. Cek{" "}
+            <code className="text-studio-amber">
+              /api/scrape?type=category&id={CATEGORY_IDS[active]}
+            </code>{" "}
+            buat lihat respons mentahnya.
+          </p>
+        </div>
+      ) : videos.length === 0 && active === "Semua" ? (
         <div className="rounded-xl border border-white/5 bg-studio-panel py-16 text-center">
           <p className="text-studio-muted">
             Gagal ambil data dari sumber (situs mungkin lagi block request server, atau struktur
@@ -71,7 +116,7 @@ export default function VideoGrid({ videos }: { videos: Video[] }) {
         </div>
       ) : shown.length === 0 ? (
         <div className="rounded-xl border border-white/5 bg-studio-panel py-16 text-center">
-          <p className="text-studio-muted">Belum ada judul di kategori ini di halaman ini.</p>
+          <p className="text-studio-muted">Belum ada judul di kategori ini.</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-5 gap-y-9">
