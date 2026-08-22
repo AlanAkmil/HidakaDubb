@@ -55,10 +55,6 @@ export async function GET(req: NextRequest) {
           pathTried,
           count: results.length,
           results,
-          note:
-            results.length === 0
-              ? "Semua pola URL search gagal/kosong. Buka www.dubbindo.site di browser, cari sesuatu, lalu kirim URL hasil pencariannya biar bisa disesuaikan di lib/scraper.ts -> search()."
-              : undefined,
         });
       }
       case "categories": {
