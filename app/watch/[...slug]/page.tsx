@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
 import Waveform from "@/components/Waveform";
+import VideoPlayer from "@/components/VideoPlayer";
 import { getWatchDetail } from "@/lib/scraper";
 
 export const revalidate = 300;
@@ -22,31 +23,12 @@ export default async function WatchPage({ params }: { params: { slug: string[] }
       <Navbar />
 
       <div className="mx-auto max-w-6xl px-5 md:px-8 pt-10 pb-20">
-        <div className="relative aspect-video overflow-hidden rounded-2xl bg-studio-panel">
-          {detail.embedUrl ? (
-            <iframe
-              src={detail.embedUrl}
-              className="h-full w-full"
-              frameBorder={0}
-              allow="autoplay; fullscreen"
-              allowFullScreen
-            />
-          ) : detail.videoSrc ? (
-            <video
-              src={detail.videoSrc}
-              poster={detail.thumbnail || undefined}
-              controls
-              className="h-full w-full object-contain bg-black"
-            />
-          ) : (
-            <div className="flex h-full w-full items-center justify-center text-studio-muted text-sm">
-              Video source gak ketemu di halaman ini — cek{" "}
-              <code className="text-studio-amber mx-1">
-                /api/scrape?type=watch&path={encodeURIComponent(watchPath)}
-              </code>
-            </div>
-          )}
-        </div>
+        <VideoPlayer
+          embedUrl={detail.embedUrl}
+          videoSources={detail.videoSources}
+          thumbnail={detail.thumbnail}
+          watchPath={watchPath}
+        />
 
         <div className="mt-6 flex items-center gap-3">
           <Waveform bars={26} className="h-6 w-40" />
