@@ -1,16 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { motion, LayoutGroup } from "framer-motion";
 import VideoCard from "./VideoCard";
 import Waveform from "./Waveform";
-import { videos, categories } from "@/lib/data";
+import type { Video } from "@/lib/scraper";
 
-export default function VideoGrid() {
+const CATEGORY_TABS = ["Anime Series", "Anime Movie", "Film Movie", "TV Series", "Shorts"];
+
+export default function VideoGrid({ videos }: { videos: Video[] }) {
   const [active, setActive] = useState<string>("Semua");
-  const tabs = ["Semua", ...categories];
+  const tabs = ["Semua", ...CATEGORY_TABS];
 
-  const shown = active === "Semua" ? videos : videos.filter((v) => v.category === active);
+  const shown = useMemo(() => {
+    if (active === "Semua") return videos;
+    // category isn't always reliably parsed from card blocks, so we also
+    // fall back to matching it loosely against the title text.
+    return videos.filter(
+      (v) =>
+        v.category === active ||
+        v.title.toLowerCase().includes(active.toLowerCase().split(" ")[0])
+    );
+  }, [active, videos]);
 
   return (
     <section id="jelajah" className="mx-auto max-w-7xl px-5 md:px-8 py-16 md:py-20">
@@ -50,16 +61,22 @@ export default function VideoGrid() {
         </div>
       </LayoutGroup>
 
-      {shown.length === 0 ? (
+      {videos.length === 0 ? (
         <div className="rounded-xl border border-white/5 bg-studio-panel py-16 text-center">
           <p className="text-studio-muted">
-            Belum ada judul di kategori ini. Coba kategori lain dulu.
+            Gagal ambil data dari sumber (situs mungkin lagi block request server, atau struktur
+            berubah). Cek <code className="text-studio-amber">/api/scrape?type=home</code> buat
+            lihat respons mentahnya.
           </p>
+        </div>
+      ) : shown.length === 0 ? (
+        <div className="rounded-xl border border-white/5 bg-studio-panel py-16 text-center">
+          <p className="text-studio-muted">Belum ada judul di kategori ini di halaman ini.</p>
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-5 gap-y-9">
           {shown.map((v, i) => (
-            <VideoCard key={v.slug} video={v} index={i} />
+            <VideoCard key={v.path} video={v} index={i} />
           ))}
         </div>
       )}
